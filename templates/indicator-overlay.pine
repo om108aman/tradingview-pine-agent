@@ -1,0 +1,99 @@
+//@version=6
+
+// ============================================================================
+// EMA Trend Overlay
+// A clean overlay skeleton: fast/slow EMA with crossover detection, dynamic
+// coloring, cross markers, alertcondition + dynamic alert(), and a top-right
+// dashboard showing the current trend bias. No repainting (confirmed bars only).
+// ============================================================================
+indicator(title         = "EMA Trend Overlay",
+          shorttitle     = "EMA Trend",
+          overlay        = true,
+          max_lines_count   = 50,
+          max_labels_count  = 50)
+
+// ============================================================================
+// INPUTS — LENGTHS
+// ============================================================================
+grpLength = "Lengths"
+fastLen = input.int(9,  title = "Fast EMA Length", minval = 1, group = grpLength, tooltip = "Period of the fast EMA.")
+slowLen = input.int(21, title = "Slow EMA Length", minval = 1, group = grpLength, tooltip = "Period of the slow EMA.")
+srcInput = input.source(close, title = "Source", group = grpLength, tooltip = "Series used to compute both EMAs.")
+
+// ============================================================================
+// INPUTS — STYLE
+// ============================================================================
+grpStyle = "Style"
+bullColor   = input.color(color.new(color.teal,   0), title = "Bullish Color", group = grpStyle)
+bearColor   = input.color(color.new(color.red,    0), title = "Bearish Color", group = grpStyle)
+slowColor   = input.color(color.new(color.gray,   0), title = "Slow EMA Color", group = grpStyle)
+fastWidth   = input.int(2, title = "Fast EMA Width", minval = 1, maxval = 5, group = grpStyle)
+slowWidth   = input.int(1, title = "Slow EMA Width", minval = 1, maxval = 5, group = grpStyle)
+showSignals = input.bool(true, title = "Show Cross Markers", group = grpStyle)
+showDash    = input.bool(true, title = "Show Dashboard",     group = grpStyle)
+
+// ============================================================================
+// CALCULATIONS
+// ============================================================================
+fastEma = ta.ema(srcInput, fastLen)
+slowEma = ta.ema(srcInput, slowLen)
+
+bullCross = ta.crossover(fastEma,  slowEma)
+bearCross = ta.crossunder(fastEma, slowEma)
+
+isBull   = fastEma > slowEma
+trendCol = isBull ? bullColor : bearColor
+
+// ============================================================================
+// PLOTS
+// ============================================================================
+plot(fastEma, title = "Fast EMA", color = trendCol, linewidth = fastWidth)
+plot(slowEma, title = "Slow EMA", color = slowColor, linewidth = slowWidth)
+
+plotshape(showSignals and bullCross,
+          title    = "Bullish Cross",
+          style    = shape.triangleup,
+          location = location.belowbar,
+          color    = bullColor,
+          size     = size.tiny,
+          text     = "Bull")
+
+plotshape(showSignals and bearCross,
+          title    = "Bearish Cross",
+          style    = shape.triangledown,
+          location = location.abovebar,
+          color    = bearColor,
+          size     = size.tiny,
+          text     = "Bear")
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+// Static alertcondition() entries — selectable in the "Create Alert" dialog.
+alertcondition(bullCross, title = "Bullish EMA Cross", message = "Fast EMA crossed ABOVE slow EMA")
+alertcondition(bearCross, title = "Bearish EMA Cross", message = "Fast EMA crossed BELOW slow EMA")
+
+// Dynamic alert() — fires only on confirmed bars to avoid repainting.
+if barstate.isconfirmed
+    if bullCross
+        alert("EMA bullish crossover on " + syminfo.ticker + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar)
+    else if bearCross
+        alert("EMA bearish crossover on " + syminfo.ticker + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar)
+
+// ============================================================================
+// DASHBOARD (top-right) — rendered once, updated only on the last bar
+// ============================================================================
+var table dash = table.new(position.top_right, 2, 3, border_width = 1)
+
+if showDash and barstate.islast
+    string biasTxt = isBull ? "BULLISH" : "BEARISH"
+    color  biasCol = isBull ? bullColor : bearColor
+
+    table.cell(dash, 0, 0, "EMA Trend",  text_color = color.white, text_halign = text.align_left,  bgcolor = color.new(color.black, 0))
+    table.cell(dash, 1, 0, "",           bgcolor = color.new(color.black, 0))
+
+    table.cell(dash, 0, 1, "Bias",       text_color = color.white, text_halign = text.align_left,  bgcolor = color.new(color.gray, 70))
+    table.cell(dash, 1, 1, biasTxt,      text_color = color.white, text_halign = text.align_right, bgcolor = biasCol)
+
+    table.cell(dash, 0, 2, "Fast/Slow",  text_color = color.white, text_halign = text.align_left,  bgcolor = color.new(color.gray, 70))
+    table.cell(dash, 1, 2, str.tostring(fastLen) + " / " + str.tostring(slowLen), text_color = color.white, text_halign = text.align_right, bgcolor = color.new(color.gray, 70))

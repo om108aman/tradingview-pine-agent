@@ -1,0 +1,121 @@
+//@version=6
+// =============================================================================
+// Strategy Clean — v6 Skeleton
+// EMA cross long/short with ATR stop & target, % equity sizing,
+// date-range filter, and webhook-ready alert messages.
+// =============================================================================
+strategy(
+     title                 = "Strategy Clean",
+     shorttitle            = "STRAT_CLEAN",
+     overlay               = true,
+     initial_capital       = 10000,
+     default_qty_type      = strategy.percent_of_equity,
+     default_qty_value     = 10,
+     commission_type       = strategy.commission.percent,
+     commission_value      = 0.04,
+     slippage              = 2,
+     process_orders_on_close = true,
+     calc_on_every_tick    = false,
+     pyramiding            = 0,
+     max_lines_count       = 50,
+     max_labels_count      = 50)
+
+// =============================================================================
+// INPUTS
+// =============================================================================
+
+// --- Signal: EMA Cross -------------------------------------------------------
+grpEma          = "EMA Cross"
+fastLen         = input.int(21,  "Fast EMA Length",   minval = 1, group = grpEma, tooltip = "Length of the fast EMA used for the cross signal.")
+slowLen         = input.int(55,  "Slow EMA Length",   minval = 1, group = grpEma, tooltip = "Length of the slow EMA used for the cross signal.")
+srcInput        = input.source(close, "Source",       group = grpEma, tooltip = "Price source for both EMAs.")
+
+// --- Risk: ATR Stop & Target -------------------------------------------------
+grpRisk         = "Risk — ATR Stop & Target"
+atrLen          = input.int(14,    "ATR Length",        minval = 1,   group = grpRisk, tooltip = "Lookback for the ATR used to size the stop and target.")
+atrStopMult     = input.float(2.0, "ATR Stop Multiple", minval = 0.0, step = 0.1, group = grpRisk, tooltip = "Stop distance = ATR x this multiple.")
+atrTgtMult      = input.float(3.0, "ATR Target Multiple", minval = 0.0, step = 0.1, group = grpRisk, tooltip = "Target distance = ATR x this multiple.")
+
+// --- Direction ---------------------------------------------------------------
+grpDir          = "Direction"
+allowLong       = input.bool(true, "Allow Long Entries",  group = grpDir)
+allowShort      = input.bool(true, "Allow Short Entries", group = grpDir)
+
+// --- Date Range Filter -------------------------------------------------------
+grpDate         = "Date Range Filter"
+useDateFilter   = input.bool(false, "Limit Backtest To Date Range", group = grpDate, tooltip = "When enabled, entries are only allowed within the start/end window below.")
+startTime       = input.time(timestamp("01 Jan 2020 00:00 +0000"), "Start Date", group = grpDate)
+endTime         = input.time(timestamp("01 Jan 2030 00:00 +0000"), "End Date",   group = grpDate)
+
+// =============================================================================
+// CALCULATIONS
+// =============================================================================
+
+fastEma         = ta.ema(srcInput, fastLen)
+slowEma         = ta.ema(srcInput, slowLen)
+atrValue        = ta.atr(atrLen)
+
+// Cross signals (cross detection requires confirmed bars; safe with default scope)
+crossUp         = ta.crossover(fastEma, slowEma)
+crossDown       = ta.crossunder(fastEma, slowEma)
+
+// Date-range gate: true when trading is permitted on the current bar
+inDateWindow    = not useDateFilter or (time >= startTime and time <= endTime)
+
+// Final entry permissions
+longSignal      = crossUp   and allowLong  and inDateWindow
+shortSignal     = crossDown and allowShort and inDateWindow
+
+// =============================================================================
+// STRATEGY EXECUTION
+// =============================================================================
+
+// --- Entries -----------------------------------------------------------------
+if longSignal
+    strategy.entry("Long", strategy.long, alert_message = "{{strategy.order.action}} | Long Entry | pos={{strategy.position_size}}")
+
+if shortSignal
+    strategy.entry("Short", strategy.short, alert_message = "{{strategy.order.action}} | Short Entry | pos={{strategy.position_size}}")
+
+// --- Exits: ATR stop & target, anchored to the average entry price -----------
+// Computed on the bar so the levels travel with the active position.
+longStopPrice   = strategy.position_avg_price - atrValue * atrStopMult
+longTgtPrice    = strategy.position_avg_price + atrValue * atrTgtMult
+shortStopPrice  = strategy.position_avg_price + atrValue * atrStopMult
+shortTgtPrice   = strategy.position_avg_price - atrValue * atrTgtMult
+
+if strategy.position_size > 0
+    strategy.exit(
+         id            = "Long Exit",
+         from_entry    = "Long",
+         stop          = longStopPrice,
+         limit         = longTgtPrice,
+         alert_message = "{{strategy.order.action}} | Long Exit | pos={{strategy.position_size}}")
+
+if strategy.position_size < 0
+    strategy.exit(
+         id            = "Short Exit",
+         from_entry    = "Short",
+         stop          = shortStopPrice,
+         limit         = shortTgtPrice,
+         alert_message = "{{strategy.order.action}} | Short Exit | pos={{strategy.position_size}}")
+
+// =============================================================================
+// PLOTS
+// =============================================================================
+
+plot(fastEma, "Fast EMA", color = color.new(color.aqua,   0), linewidth = 1)
+plot(slowEma, "Slow EMA", color = color.new(color.orange, 0), linewidth = 2)
+
+// Active stop / target levels (only drawn while in a position)
+plot(strategy.position_size > 0 ? longStopPrice  : na, "Long Stop",    color = color.new(color.red,  0),   style = plot.style_linebr)
+plot(strategy.position_size > 0 ? longTgtPrice   : na, "Long Target",  color = color.new(color.green, 0),  style = plot.style_linebr)
+plot(strategy.position_size < 0 ? shortStopPrice : na, "Short Stop",   color = color.new(color.red,  0),   style = plot.style_linebr)
+plot(strategy.position_size < 0 ? shortTgtPrice  : na, "Short Target", color = color.new(color.green, 0),  style = plot.style_linebr)
+
+// Entry markers
+plotshape(longSignal,  "Long Signal",  style = shape.triangleup,   location = location.belowbar, color = color.new(color.green, 0), size = size.tiny)
+plotshape(shortSignal, "Short Signal", style = shape.triangledown, location = location.abovebar, color = color.new(color.red,   0), size = size.tiny)
+
+// --- Background tint when outside the permitted date window ------------------
+bgcolor(useDateFilter and not inDateWindow ? color.new(color.gray, 90) : na, title = "Outside Date Range")

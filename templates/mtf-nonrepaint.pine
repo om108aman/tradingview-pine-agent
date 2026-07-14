@@ -1,0 +1,121 @@
+//@version=6
+// =============================================================================
+// MTF NON-REPAINTING HTF HELPER
+// -----------------------------------------------------------------------------
+// Demonstrates a safe, non-repainting request.security() pattern for pulling
+// higher-timeframe (HTF) data onto a lower-timeframe chart. The helper returns
+// the last *confirmed* HTF value, so historical bars and the live bar always
+// agree once the script has been recalculated — i.e. it does not repaint.
+// =============================================================================
+
+indicator("MTF Non-Repaint HTF Helper", shorttitle="MTF NR", overlay=true)
+
+// =============================================================================
+// INPUTS
+// =============================================================================
+
+// --- Higher Timeframe ---------------------------------------------------------
+grpHTF = "Higher Timeframe"
+htfTf      = input.timeframe("240", title="HTF Resolution", group=grpHTF, tooltip="Higher timeframe to request data from. Must be >= chart timeframe to be meaningful.")
+useChartSym = input.bool(true, title="Use Chart Symbol", group=grpHTF, tooltip="When on, pulls HTF data for the current chart symbol. Turn off to override with a custom symbol.")
+customSym  = input.symbol("", title="Custom Symbol", group=grpHTF, tooltip="Symbol used when 'Use Chart Symbol' is off.")
+
+// --- EMA Settings -------------------------------------------------------------
+grpEMA = "EMA Settings"
+emaLen     = input.int(50, title="EMA Length", minval=1, group=grpEMA)
+emaSrcType = input.string("close", title="EMA Source", options=["open", "high", "low", "close", "hl2", "hlc3", "ohlc4"], group=grpEMA)
+
+// --- Display ------------------------------------------------------------------
+grpDisplay = "Display"
+showEma    = input.bool(true, title="Show HTF EMA", group=grpDisplay)
+showTrend  = input.bool(true, title="Color By HTF Trend", group=grpDisplay, tooltip="Tints the stepped EMA line green/red based on the confirmed HTF trend.")
+upCol      = input.color(color.new(color.teal, 0), title="Up Trend", group=grpDisplay, inline="cols")
+dnCol      = input.color(color.new(color.red, 0), title="Down Trend", group=grpDisplay, inline="cols")
+lineWidth  = input.int(2, title="Line Width", minval=1, maxval=5, group=grpDisplay)
+
+// =============================================================================
+// NON-REPAINTING HTF HELPER
+// -----------------------------------------------------------------------------
+// f_secure(sym, tf, expr)
+//   sym  : symbol to request (e.g. syminfo.tickerid)
+//   tf   : higher-timeframe resolution string (e.g. "240", "D")
+//   expr : the series expression to evaluate on the HTF
+//
+// WHY THIS DOES NOT REPAINT
+//   1. lookahead=barmerge.lookahead_off  -> request.security never peeks into
+//      the future; on a forming HTF bar it can only see data up to "now".
+//   2. We pass expr[1] (the value of the previous, fully CLOSED HTF bar)
+//      instead of the current, still-forming HTF bar. A closed bar's value is
+//      final and can never change, so it is identical in real time and in
+//      historical recalculation.
+//   3. gaps=barmerge.gaps_off keeps the returned series continuous on the
+//      lower timeframe (each LTF bar carries the last known confirmed value).
+//
+//   The trade-off is a deliberate one-HTF-bar lag: the value you see is always
+//   from the last fully closed HTF bar. That lag is exactly what guarantees the
+//   line you backtest against is the line you trade against — no hindsight.
+// =============================================================================
+
+f_secure(simple string sym, simple string tf, series float expr) =>
+    request.security(sym, tf, expr[1], lookahead=barmerge.lookahead_off, gaps=barmerge.gaps_off)
+
+// Resolve the requested symbol (chart symbol or user override).
+reqSym = useChartSym or customSym == "" ? syminfo.tickerid : customSym
+
+// =============================================================================
+// CALCULATIONS
+// -----------------------------------------------------------------------------
+// The EMA is computed *inside* the HTF context by passing a deferred-evaluation
+// expression to request.security. f_secure then takes the confirmed [1] value.
+// =============================================================================
+
+// Map the source selection to an HTF series. Evaluated in the HTF context.
+f_src() =>
+    switch emaSrcType
+        "open"  => open
+        "high"  => high
+        "low"   => low
+        "close" => close
+        "hl2"   => hl2
+        "hlc3"  => hlc3
+        "ohlc4" => ohlc4
+        => close
+
+// Confirmed HTF EMA (last closed HTF bar).
+htfEma = f_secure(reqSym, htfTf, ta.ema(f_src(), emaLen))
+
+// Confirmed HTF trend: +1 when the HTF close is above its EMA, -1 otherwise.
+// Computed entirely from confirmed HTF values, so it never repaints.
+htfTrendRaw = f_secure(reqSym, htfTf, close > ta.ema(close, emaLen) ? 1.0 : -1.0)
+htfTrendUp  = htfTrendRaw > 0
+
+// =============================================================================
+// PLOTTING
+// -----------------------------------------------------------------------------
+// Stepped line (style_stepline) makes the one-HTF-bar resolution explicit:
+// the value holds flat across all LTF bars belonging to the same HTF bar, then
+// steps to the next confirmed value.
+// =============================================================================
+
+emaColor = not showTrend ? color.new(color.gray, 0) : (htfTrendUp ? upCol : dnCol)
+
+plot(showEma ? htfEma : na, title="HTF EMA (confirmed)", color=emaColor, linewidth=lineWidth, style=plot.style_stepline)
+
+// Optional background tint reinforcing the confirmed HTF trend.
+bgcolor(showTrend ? color.new(htfTrendUp ? upCol : dnCol, 92) : na, title="HTF Trend Tint")
+
+// =============================================================================
+// STATUS TABLE
+// =============================================================================
+grpTable = "Status Table"
+showTable = input.bool(true, title="Show Status Table", group=grpTable)
+
+var table info = table.new(position.top_right, 2, 3, border_width=1)
+
+if showTable and barstate.islast
+    table.cell(info, 0, 0, "HTF",       text_color=color.white, bgcolor=color.new(color.gray, 30))
+    table.cell(info, 1, 0, htfTf,       text_color=color.white, bgcolor=color.new(color.gray, 30))
+    table.cell(info, 0, 1, "HTF EMA",   text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(info, 1, 1, str.tostring(htfEma, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(info, 0, 2, "Trend",     text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(info, 1, 2, htfTrendUp ? "UP" : "DOWN", text_color=color.white, bgcolor=color.new(htfTrendUp ? upCol : dnCol, 0))

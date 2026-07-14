@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+._*
+
+# editors
+.vscode/
+.idea/
+
+# node (in case anyone adds tooling later)
+node_modules/
+npm-debug.log*
+
+# secrets / local config — never commit
+.env
+.env.*
+*.local.json
+rules.json

@@ -1,0 +1,140 @@
+//@version=6
+indicator("Analytics Dashboard", overlay = true)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// --- Dashboard Settings -----------------------------------------------------
+string GRP_DASH   = "Dashboard"
+themeInput        = input.string("Dark", "Theme", options = ["Dark", "Light"], group = GRP_DASH, tooltip = "Color scheme for the dashboard panel.")
+positionInput     = input.string("Top Right", "Position", options = ["Top Right", "Top Center", "Top Left", "Middle Right", "Middle Center", "Middle Left", "Bottom Right", "Bottom Center", "Bottom Left"], group = GRP_DASH, tooltip = "Anchor location of the dashboard on the chart.")
+textSizeInput     = input.string("Normal", "Text Size", options = ["Tiny", "Small", "Normal", "Large"], group = GRP_DASH)
+
+// --- Indicator Settings -----------------------------------------------------
+string GRP_CALC   = "Indicator Settings"
+rsiLengthInput    = input.int(14, "RSI Length", minval = 1, group = GRP_CALC)
+atrLengthInput    = input.int(14, "ATR Length", minval = 1, group = GRP_CALC)
+maFastInput       = input.int(50, "Fast MA Length", minval = 1, group = GRP_CALC, tooltip = "Used together with the Slow MA to determine trend.")
+maSlowInput       = input.int(200, "Slow MA Length", minval = 1, group = GRP_CALC, tooltip = "Used together with the Fast MA to determine trend.")
+
+// --- Level Settings ---------------------------------------------------------
+string GRP_LEVEL  = "Reference Level"
+levelSourceInput  = input.string("Previous Day High", "Level Source", options = ["Previous Day High", "Previous Day Low", "Manual"], group = GRP_LEVEL, tooltip = "The reference level used to compute the distance row.")
+manualLevelInput  = input.price(0.0, "Manual Level", group = GRP_LEVEL, tooltip = "Used only when Level Source is set to Manual.")
+
+// ============================================================================
+// CALCULATIONS
+// ============================================================================
+
+// --- Core indicators --------------------------------------------------------
+rsiValue   = ta.rsi(close, rsiLengthInput)
+atrValue   = ta.atr(atrLengthInput)
+maFast     = ta.sma(close, maFastInput)
+maSlow     = ta.sma(close, maSlowInput)
+
+// --- Trend classification ---------------------------------------------------
+bool isBull = maFast > maSlow and close > maFast
+bool isBear = maFast < maSlow and close < maFast
+string trendText = isBull ? "Bullish" : isBear ? "Bearish" : "Neutral"
+
+// --- Reference level + distance ---------------------------------------------
+// Request previous day high/low without lookahead to avoid repainting.
+float prevDayHigh = request.security(syminfo.tickerid, "D", high[1], lookahead = barmerge.lookahead_on)
+float prevDayLow  = request.security(syminfo.tickerid, "D", low[1],  lookahead = barmerge.lookahead_on)
+
+float levelValue = switch levelSourceInput
+    "Previous Day High" => prevDayHigh
+    "Previous Day Low"  => prevDayLow
+    => manualLevelInput
+
+// Distance from current price to the reference level (in price and percent).
+float levelDist    = close - levelValue
+float levelDistPct = levelValue != 0 ? levelDist / levelValue * 100 : na
+
+// ============================================================================
+// THEME + STYLE
+// ============================================================================
+
+bool isDark = themeInput == "Dark"
+
+// Theme-aware base colors.
+color colHeaderBg = isDark ? color.new(#1e222d, 0)  : color.new(#e6e9ef, 0)
+color colRowBg    = isDark ? color.new(#131722, 0)  : color.new(#ffffff, 0)
+color colAltRowBg = isDark ? color.new(#1b1f2a, 0)  : color.new(#f3f5f9, 0)
+color colText     = isDark ? color.new(#d1d4dc, 0)  : color.new(#1e222d, 0)
+color colHeaderTx = isDark ? color.new(#ffffff, 0)  : color.new(#000000, 0)
+color colBorder   = isDark ? color.new(#2a2e39, 0)  : color.new(#c9cdd6, 0)
+
+// Semantic colors (consistent across themes).
+color colBull = color.new(#26a69a, 0)
+color colBear = color.new(#ef5350, 0)
+color colNeut = isDark ? color.new(#787b86, 0) : color.new(#5d606b, 0)
+
+// Map the position input string to a built-in position.* constant.
+posValue = switch positionInput
+    "Top Left"      => position.top_left
+    "Top Center"    => position.top_center
+    "Top Right"     => position.top_right
+    "Middle Left"   => position.middle_left
+    "Middle Center" => position.middle_center
+    "Middle Right"  => position.middle_right
+    "Bottom Left"   => position.bottom_left
+    "Bottom Center" => position.bottom_center
+    "Bottom Right"  => position.bottom_right
+    => position.top_right
+
+// Map the text-size input string to a built-in size.* constant.
+txtSize = switch textSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.normal
+
+// Color helpers driven by indicator values.
+color rsiColor = rsiValue >= 70 ? colBear : rsiValue <= 30 ? colBull : colNeut
+color trendColor = isBull ? colBull : isBear ? colBear : colNeut
+color distColor = levelDist > 0 ? colBull : levelDist < 0 ? colBear : colNeut
+
+// ============================================================================
+// DASHBOARD TABLE
+// ============================================================================
+
+// Build the table once, then repopulate only on the last bar for performance.
+var table dash = table.new(position.top_right, columns = 2, rows = 7, border_width = 1)
+
+// Helper to write a labeled row with a value cell.
+writeRow(table t, int row, string label, string value, color valueColor, color rowBg, color labelColor, color borderColor, string cellSize) =>
+    table.cell(t, 0, row, label, text_color = labelColor, text_halign = text.align_left,  bgcolor = rowBg, text_size = cellSize)
+    table.cell(t, 1, row, value, text_color = valueColor, text_halign = text.align_right, bgcolor = rowBg, text_size = cellSize)
+
+if barstate.islast
+    // Re-anchor position (allows changing the Position input without re-adding).
+    table.set_position(dash, posValue)
+
+    // --- Header row ---------------------------------------------------------
+    table.cell(dash, 0, 0, "ANALYTICS",  text_color = colHeaderTx, text_halign = text.align_left,  bgcolor = colHeaderBg, text_size = txtSize)
+    table.cell(dash, 1, 0, "DASHBOARD", text_color = colHeaderTx, text_halign = text.align_right, bgcolor = colHeaderBg, text_size = txtSize)
+
+    // --- Data rows ----------------------------------------------------------
+    // Symbol
+    writeRow(dash, 1, "Symbol", syminfo.ticker, colText, colRowBg, colText, colBorder, txtSize)
+
+    // Timeframe
+    string tfText = timeframe.period
+    writeRow(dash, 2, "Timeframe", tfText, colText, colAltRowBg, colText, colBorder, txtSize)
+
+    // Trend
+    writeRow(dash, 3, "Trend", trendText, trendColor, colRowBg, colText, colBorder, txtSize)
+
+    // RSI
+    writeRow(dash, 4, "RSI(" + str.tostring(rsiLengthInput) + ")", str.tostring(rsiValue, "#.##"), rsiColor, colAltRowBg, colText, colBorder, txtSize)
+
+    // ATR
+    writeRow(dash, 5, "ATR(" + str.tostring(atrLengthInput) + ")", str.tostring(atrValue, format.mintick), colText, colRowBg, colText, colBorder, txtSize)
+
+    // Distance to level
+    string distText = str.tostring(levelDist, format.mintick) + (na(levelDistPct) ? "" : " (" + str.tostring(levelDistPct, "#.##") + "%)")
+    writeRow(dash, 6, "Dist to Level", distText, distColor, colAltRowBg, colText, colBorder, txtSize)
+

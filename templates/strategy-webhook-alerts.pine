@@ -1,0 +1,185 @@
+//@version=6
+// =============================================================================
+// Strategy: Webhook Alerts (Broker Automation Ready)
+// -----------------------------------------------------------------------------
+// Purpose:
+//   A minimal, signal-agnostic strategy template that demonstrates how to emit
+//   webhook-ready JSON alerts for broker automation. The trading logic itself
+//   is a simple, transparent moving-average crossover used only to generate
+//   order events; the real focus is the alert plumbing.
+//
+//   Two alert delivery styles are shown:
+//     1) A single dynamic alert() call that fires a valid JSON payload on
+//        confirmed order fills (the primary, recommended approach).
+//     2) The classic per-order alert_message strings on strategy.entry/exit,
+//        provided as a COMMENTED alternative for users who prefer static
+//        webhook messages attached to each order.
+//
+// Webhook tip:
+//   Create ONE alert in TradingView with condition "Any alert() function call"
+//   and leave the message box empty — the JSON below is the message body.
+// =============================================================================
+
+strategy(
+     title              = "Strategy - Webhook Alerts",
+     shorttitle         = "WH Alerts",
+     overlay            = true,
+     pyramiding         = 0,
+     initial_capital    = 10000,
+     default_qty_type   = strategy.percent_of_equity,
+     default_qty_value  = 10,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.04,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// =============================================================================
+// Inputs
+// =============================================================================
+
+// --- Signal (MA Crossover) ---------------------------------------------------
+grpSignal   = "Signal — MA Crossover"
+fastLength  = input.int(9,  "Fast MA Length",  minval = 1, group = grpSignal, tooltip = "Length of the fast moving average.")
+slowLength  = input.int(21, "Slow MA Length",  minval = 1, group = grpSignal, tooltip = "Length of the slow moving average.")
+maType      = input.string("EMA", "MA Type", options = ["SMA", "EMA"], group = grpSignal, tooltip = "Moving-average calculation method.")
+allowLong   = input.bool(true, "Allow Long Entries",  group = grpSignal)
+allowShort  = input.bool(true, "Allow Short Entries", group = grpSignal)
+
+// --- Order Sizing & Risk -----------------------------------------------------
+grpRisk     = "Order Sizing & Risk"
+orderQty    = input.float(1.0, "Order Quantity (units)", minval = 0.0, step = 0.1, group = grpRisk, tooltip = "Quantity sent in the webhook payload (qty field). Set 0 to omit a fixed size and rely on the strategy default sizing.")
+useFixedQty = input.bool(false, "Send Fixed Quantity in Payload", group = grpRisk, tooltip = "When enabled, the 'qty' field uses Order Quantity above; otherwise it reports the strategy position size delta.")
+
+// --- Webhook / Payload -------------------------------------------------------
+grpHook     = "Webhook / Payload"
+accountTag  = input.string("MAIN", "Account Tag", group = grpHook, tooltip = "Free-form account identifier echoed into the payload (account field).")
+orderPrefix = input.string("WH", "Client Order ID Prefix", group = grpHook, tooltip = "Prefix used when building the clientOrderId field.")
+priceSource = input.string("Close", "Payload Price Source", options = ["Close", "Open", "Fill Price"], group = grpHook, tooltip = "Which price to report in the payload. 'Fill Price' uses the executed average entry/exit price when available.")
+enableAlerts = input.bool(true, "Enable Webhook Alerts", group = grpHook, tooltip = "Master switch for firing the alert() JSON payload.")
+
+// =============================================================================
+// Signal Calculation
+// =============================================================================
+
+maFast = maType == "SMA" ? ta.sma(close, fastLength) : ta.ema(close, fastLength)
+maSlow = maType == "SMA" ? ta.sma(close, slowLength) : ta.ema(close, slowLength)
+
+longSignal  = ta.crossover(maFast, maSlow)
+shortSignal = ta.crossunder(maFast, maSlow)
+
+plot(maFast, "Fast MA", color = color.new(color.aqua, 0),   linewidth = 1)
+plot(maSlow, "Slow MA", color = color.new(color.orange, 0), linewidth = 2)
+
+// =============================================================================
+// Strategy Orders
+// -----------------------------------------------------------------------------
+// Descriptive, stable order ids make broker-side reconciliation easier and are
+// echoed verbatim into the JSON payload as the "orderId" field.
+// =============================================================================
+
+idLongEntry  = "Long Entry"
+idShortEntry = "Short Entry"
+idLongExit   = "Long Exit"
+idShortExit  = "Short Exit"
+
+// Optional static alert_message alternative (see commented block at bottom).
+if allowLong and longSignal
+    strategy.entry(idLongEntry, strategy.long, qty = useFixedQty and orderQty > 0 ? orderQty : na)
+
+if allowShort and shortSignal
+    strategy.entry(idShortEntry, strategy.short, qty = useFixedQty and orderQty > 0 ? orderQty : na)
+
+// Flat-on-opposite-signal exits (kept simple; entries already reverse position).
+if allowLong and shortSignal and strategy.position_size > 0
+    strategy.close(idLongEntry, comment = idLongExit)
+
+if allowShort and longSignal and strategy.position_size < 0
+    strategy.close(idShortEntry, comment = idShortExit)
+
+// =============================================================================
+// Webhook Payload Builder
+// -----------------------------------------------------------------------------
+// We detect a CONFIRMED order fill by watching for a change in the strategy's
+// realized order count (strategy.closedtrades + open position transitions are
+// noisy, so we key off strategy.opentrades / position_size changes plus the
+// new-order markers exposed via strategy.order.* on the fill bar).
+// =============================================================================
+
+// Compute ta.change() on every bar (assign to globals first) so the short-
+// circuiting "or" below cannot skip a series-dependent call. This keeps the
+// fill-detection consistent and avoids inconsistent-calculation warnings.
+closedTradesChg = ta.change(strategy.closedtrades)
+openTradesChg   = ta.change(strategy.opentrades)
+orderFilled     = closedTradesChg != 0 or openTradesChg != 0
+
+// Resolve a human-readable action from the position transition this bar.
+prevPos = strategy.position_size[1]
+curPos  = strategy.position_size
+
+actionStr = curPos > prevPos ? "BUY" : curPos < prevPos ? "SELL" : "FLAT"
+
+// Choose the reporting price for the payload.
+fillPrice = not na(strategy.position_avg_price) and strategy.position_size != 0 ? strategy.position_avg_price : close
+payloadPrice = switch priceSource
+    "Open"       => open
+    "Fill Price" => fillPrice
+    => close
+
+// Quantity reported: either the fixed input or the absolute size of the
+// position change on this bar.
+posDelta = math.abs(curPos - prevPos)
+payloadQty = useFixedQty and orderQty > 0 ? orderQty : posDelta
+
+// Stable, unique-ish client order id: PREFIX-<bar_index>-<unix_time_ms>.
+clientOrderId = str.format("{0}-{1}-{2}", orderPrefix, bar_index, str.tostring(time))
+
+// Build a VALID JSON string by CONCATENATION (not str.format).
+// Why not str.format: a literal "{" in a str.format template must be doubled
+// ("{{"), otherwise str.format throws a RUNTIME error ("invalid format string")
+// that compiles clean but fails on the chart. Concatenation sidesteps the brace
+// trap entirely. Numeric fields are unquoted; string fields are quoted. Price
+// and qty are rounded to a broker-friendly precision.
+orderIdField = curPos > prevPos ? (curPos > 0 ? idLongEntry : idShortExit) : (curPos < 0 ? idShortEntry : idLongExit)
+jsonPayload = '{"ticker":"' + syminfo.ticker + '"' +
+     ',"action":"' + actionStr + '"' +
+     ',"qty":' + str.tostring(payloadQty, "#.########") +
+     ',"price":' + str.tostring(payloadPrice, format.mintick) +
+     ',"account":"' + accountTag + '"' +
+     ',"orderId":"' + orderIdField + '"' +
+     ',"clientOrderId":"' + clientOrderId + '"' +
+     ',"time":' + str.tostring(time) + '}'
+
+// =============================================================================
+// Fire the Webhook Alert
+// -----------------------------------------------------------------------------
+// A single alert() call delivers the dynamic JSON on confirmed fills only.
+// Create one alert with "Any alert() function call" — the message box can stay
+// empty because the payload below becomes the webhook body.
+// =============================================================================
+
+if enableAlerts and orderFilled and actionStr != "FLAT"
+    alert(jsonPayload, alert.freq_once_per_bar)
+
+// =============================================================================
+// COMMENTED ALTERNATIVE — Classic alert_message approach
+// -----------------------------------------------------------------------------
+// Instead of (or in addition to) the dynamic alert() above, you can attach a
+// static JSON template to each order via the alert_message parameter. In the
+// alert dialog choose the strategy as the condition and put {{strategy.order.alert_message}}
+// in the message box. TradingView substitutes the matching order's message on fill.
+//
+// Example (uncomment and remove the plain strategy.entry/close calls above):
+//
+// longMsg  = '{"ticker":"' + syminfo.ticker + '","action":"BUY","qty":'  + str.tostring(orderQty) + ',"clientOrderId":"' + orderPrefix + '-LONG"}'
+// shortMsg = '{"ticker":"' + syminfo.ticker + '","action":"SELL","qty":' + str.tostring(orderQty) + ',"clientOrderId":"' + orderPrefix + '-SHORT"}'
+// exitMsg  = '{"ticker":"' + syminfo.ticker + '","action":"CLOSE","qty":' + str.tostring(orderQty) + ',"clientOrderId":"' + orderPrefix + '-EXIT"}'
+//
+// if allowLong and longSignal
+//     strategy.entry(idLongEntry,  strategy.long,  qty = orderQty, alert_message = longMsg)
+// if allowShort and shortSignal
+//     strategy.entry(idShortEntry, strategy.short, qty = orderQty, alert_message = shortMsg)
+// if shortSignal and strategy.position_size > 0
+//     strategy.close(idLongEntry,  alert_message = exitMsg)
+// if longSignal and strategy.position_size < 0
+//     strategy.close(idShortEntry, alert_message = exitMsg)
+// =============================================================================

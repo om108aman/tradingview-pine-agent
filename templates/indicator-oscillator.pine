@@ -1,0 +1,87 @@
+//@version=6
+
+// ============================================================================
+// Normalized Momentum Oscillator
+// Separate-pane (overlay=false) oscillator skeleton with gradient plot,
+// banded fill, extreme background highlights, and OB/OS alerts.
+// ============================================================================
+indicator(title = "Normalized Momentum Oscillator", shorttitle = "NMO", overlay = false, timeframe = "", timeframe_gaps = true)
+
+// ----------------------------------------------------------------------------
+// Inputs — Calculation
+// ----------------------------------------------------------------------------
+srcInput      = input.source(close, title = "Source",                group = "Calculation")
+lengthInput   = input.int(14,       title = "Oscillator Length",     minval = 1, group = "Calculation")
+smoothInput   = input.int(3,        title = "Smoothing Length",      minval = 1, group = "Calculation")
+normLenInput  = input.int(50,       title = "Normalization Lookback",minval = 2, group = "Calculation")
+
+// ----------------------------------------------------------------------------
+// Inputs — Bands
+// ----------------------------------------------------------------------------
+obLevelInput  = input.float(70.0, title = "Overbought Level", minval = 50.0, maxval = 100.0, step = 1.0, group = "Bands")
+osLevelInput  = input.float(30.0, title = "Oversold Level",   minval = 0.0,  maxval = 50.0,  step = 1.0, group = "Bands")
+midLevelInput = input.float(50.0, title = "Midline Level",    minval = 0.0,  maxval = 100.0, step = 1.0, group = "Bands")
+
+// ----------------------------------------------------------------------------
+// Inputs — Visuals
+// ----------------------------------------------------------------------------
+showFillInput   = input.bool(true,  title = "Show Band Fill",            group = "Visuals")
+showBgInput     = input.bool(true,  title = "Highlight Extremes (bg)",   group = "Visuals")
+bullColInput    = input.color(color.new(#26a69a, 0), title = "Bullish Color",   group = "Visuals")
+bearColInput    = input.color(color.new(#ef5350, 0), title = "Bearish Color",   group = "Visuals")
+neutralColInput = input.color(color.new(#787b86, 0), title = "Neutral Color",   group = "Visuals")
+
+// ----------------------------------------------------------------------------
+// Calculation — momentum, smoothing, 0..100 normalization
+// ----------------------------------------------------------------------------
+// Raw momentum: rate of change of the chosen source.
+momentum = ta.mom(srcInput, lengthInput)
+
+// Smooth the raw momentum to reduce whipsaw.
+momentumSmoothed = ta.ema(momentum, smoothInput)
+
+// Min-max normalize the smoothed momentum onto a 0..100 scale over the lookback.
+lowest  = ta.lowest(momentumSmoothed, normLenInput)
+highest = ta.highest(momentumSmoothed, normLenInput)
+spread  = highest - lowest
+oscRaw  = spread != 0.0 ? (momentumSmoothed - lowest) / spread * 100.0 : 50.0
+
+// Final oscillator value, clamped defensively into [0, 100].
+osc = math.max(0.0, math.min(100.0, oscRaw))
+
+// ----------------------------------------------------------------------------
+// State — regime flags and crosses
+// ----------------------------------------------------------------------------
+isOverbought = osc >= obLevelInput
+isOversold   = osc <= osLevelInput
+
+crossOverbought = ta.crossover(osc, obLevelInput)
+crossOversold   = ta.crossunder(osc, osLevelInput)
+
+// ----------------------------------------------------------------------------
+// Plotting — guides, banded fill, gradient oscillator line
+// ----------------------------------------------------------------------------
+// Horizontal guides at the band levels.
+obHline  = hline(obLevelInput,  title = "Overbought", color = bearColInput,    linestyle = hline.style_dashed, linewidth = 1)
+midHline = hline(midLevelInput, title = "Midline",    color = neutralColInput, linestyle = hline.style_dotted, linewidth = 1)
+osHline  = hline(osLevelInput,  title = "Oversold",   color = bullColInput,    linestyle = hline.style_dashed, linewidth = 1)
+
+// Soft fill between the overbought and oversold guides.
+fill(obHline, osHline, color = showFillInput ? color.new(neutralColInput, 90) : na, title = "Band Fill")
+
+// Gradient color for the oscillator line, mapped across the 0..100 range.
+gradColor = color.from_gradient(osc, 0.0, 100.0, bullColInput, bearColInput)
+plot(osc, title = "Oscillator", color = gradColor, linewidth = 2)
+
+// ----------------------------------------------------------------------------
+// Background highlight on extremes
+// ----------------------------------------------------------------------------
+bgCol = showBgInput ? (isOverbought ? color.new(bearColInput, 85) : isOversold ? color.new(bullColInput, 85) : na) : na
+bgcolor(bgCol, title = "Extreme Highlight")
+
+// ----------------------------------------------------------------------------
+// Alerts
+// ----------------------------------------------------------------------------
+alertcondition(crossOverbought, title = "Overbought Cross", message = "NMO crossed above the overbought level ({{ticker}}, {{interval}})")
+alertcondition(crossOversold,   title = "Oversold Cross",   message = "NMO crossed below the oversold level ({{ticker}}, {{interval}})")
+

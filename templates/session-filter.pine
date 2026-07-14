@@ -1,0 +1,100 @@
+//@version=6
+// =============================================================================
+// Session & Date-Range Filter
+// -----------------------------------------------------------------------------
+// A reusable, timezone-aware template demonstrating the correct session / time
+// window pattern in Pine v6:
+//   - input.session for the intraday trading window
+//   - timeframe-aware in-session detection via time(timeframe.period, session, tz)
+//   - a date-range filter built from two input.time fields + timestamp()
+//   - na-safe boolean handling (time() returns na outside the window)
+//   - bgcolor shading of the active session
+//   - an explicit exchange-timezone guard so the window aligns to the
+//     instrument's exchange rather than the chart user's local time
+// =============================================================================
+
+indicator("Session & Date-Range Filter", overlay = true)
+
+// =============================================================================
+// Inputs
+// =============================================================================
+
+// --- Session window ----------------------------------------------------------
+string GRP_SESSION = "Session Window"
+sessionInput = input.session("0930-1600", title = "Trading Hours", group = GRP_SESSION, tooltip = "Intraday window in which the filter is considered active.")
+maskInput     = input.string("1234567", title = "Active Days", group = GRP_SESSION, tooltip = "Days the session applies to. 1=Sun ... 7=Sat. Append the days you want to keep, e.g. 23456 for Mon-Fri.")
+
+// --- Timezone handling -------------------------------------------------------
+string GRP_TZ = "Timezone"
+useExchangeTz = input.bool(true, title = "Anchor to Exchange Timezone", group = GRP_TZ, tooltip = "When on, the session is evaluated in the symbol's exchange timezone so it stays correct across instruments. When off, an explicit timezone is used.")
+manualTz      = input.string("America/New_York", title = "Manual Timezone", group = GRP_TZ, tooltip = "IANA timezone (e.g. America/New_York, Asia/Kolkata, Europe/London) or a GMT offset like GMT+5:30. Used only when 'Anchor to Exchange Timezone' is off.")
+
+// --- Date range --------------------------------------------------------------
+string GRP_DATE = "Date Range Filter"
+useDateRange = input.bool(false, title = "Limit To Date Range", group = GRP_DATE, tooltip = "When on, the filter is only active between the start and end dates below.")
+startTime    = input.time(timestamp("01 Jan 2020 00:00 +0000"), title = "Start Date", group = GRP_DATE)
+endTime      = input.time(timestamp("01 Jan 2030 00:00 +0000"), title = "End Date",   group = GRP_DATE)
+
+// --- Appearance --------------------------------------------------------------
+string GRP_STYLE = "Appearance"
+shadeSession = input.bool(true, title = "Shade Active Session", group = GRP_STYLE)
+shadeColor   = input.color(color.new(color.blue, 88), title = "Session Shade", group = GRP_STYLE)
+
+// =============================================================================
+// Timezone resolution
+// =============================================================================
+// syminfo.timezone resolves to the instrument's exchange timezone, so the same
+// "0930-1600" window lands on the right wall-clock time on NASDAQ, NSE, LSE,
+// etc. Falling back to a manual IANA/offset string keeps full control.
+string sessionTz = useExchangeTz ? syminfo.timezone : manualTz
+
+// =============================================================================
+// In-session detection
+// =============================================================================
+// time(timeframe.period, session, timezone) returns the bar's time when the bar
+// falls inside the session+day mask, and na otherwise. The timeframe.period
+// argument makes the test resolution-agnostic. na(...) converts the result into
+// a clean bool without ever assigning na to a bool variable.
+string sessionSpec = sessionInput + ":" + maskInput
+int    sessionTime = time(timeframe.period, sessionSpec, sessionTz)
+bool   inSession    = not na(sessionTime)
+
+// =============================================================================
+// Date-range detection
+// =============================================================================
+// time is the current bar's UNIX timestamp (ms). The bounds come from
+// input.time fields, themselves seeded with timestamp() so they are valid
+// absolute instants regardless of chart timezone.
+bool inDateRange = not useDateRange or (time >= startTime and time <= endTime)
+
+// =============================================================================
+// Combined filter
+// =============================================================================
+// The final gate every downstream rule should consult. na-safe by construction.
+bool filterActive = inSession and inDateRange
+
+// =============================================================================
+// Visuals
+// =============================================================================
+bgcolor(shadeSession and filterActive ? shadeColor : na, title = "Active Session Shade")
+
+// Status table for quick visual confirmation while building strategies.
+var table statusTable = table.new(position.top_right, 2, 4, border_width = 1)
+if barstate.islast
+    table.cell(statusTable, 0, 0, "Filter",   text_color = color.white, bgcolor = color.new(color.gray, 0))
+    table.cell(statusTable, 1, 0, filterActive ? "ACTIVE" : "OFF", text_color = color.white, bgcolor = filterActive ? color.new(color.green, 0) : color.new(color.red, 0))
+    table.cell(statusTable, 0, 1, "In Session", text_color = color.white, bgcolor = color.new(color.gray, 0))
+    table.cell(statusTable, 1, 1, inSession ? "Yes" : "No", text_color = color.white, bgcolor = color.new(color.gray, 0))
+    table.cell(statusTable, 0, 2, "In Dates",   text_color = color.white, bgcolor = color.new(color.gray, 0))
+    table.cell(statusTable, 1, 2, inDateRange ? "Yes" : "No", text_color = color.white, bgcolor = color.new(color.gray, 0))
+    table.cell(statusTable, 0, 3, "Timezone",   text_color = color.white, bgcolor = color.new(color.gray, 0))
+    table.cell(statusTable, 1, 3, sessionTz, text_color = color.white, bgcolor = color.new(color.gray, 0))
+
+// =============================================================================
+// Plots & alerts
+// =============================================================================
+// A 0/1 series so the filter state is usable in alerts and other scripts.
+plot(filterActive ? 1 : 0, title = "Filter Active (1/0)", display = display.data_window)
+
+alertcondition(filterActive and not filterActive[1], title = "Session Started", message = "Session/date filter became ACTIVE")
+alertcondition(not filterActive and filterActive[1], title = "Session Ended",   message = "Session/date filter became INACTIVE")
